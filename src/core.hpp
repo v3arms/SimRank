@@ -39,7 +39,7 @@ class SimrankEstimator {
 
 SimrankEstimator::SimrankEstimator()
 : tol(0.00001)
-, c(0.8)
+, c(0.4)
 , num_iter(10) {
     MatCreate(PETSC_COMM_WORLD, &W);
     MatCreate(PETSC_COMM_WORLD, &WT);
@@ -65,7 +65,6 @@ SimrankEstimator::~SimrankEstimator() {
 void SimrankEstimator::matLoadPetsc(const char fname[]) {
     PetscViewer vw;
     Mat TMP;
-    PetscErrorCode ierr;
     
     PetscViewerBinaryOpen(PETSC_COMM_WORLD, fname, FILE_MODE_READ, &vw);
     MatCreate(PETSC_COMM_WORLD, &TMP);
@@ -114,6 +113,7 @@ PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
     MatShellGetContext(MFFD, &to_mffd);
     Mat     **m = (Mat**)to_mffd;
     Mat M = *m[1];
+    Mat MM = *m[0];
     Mat C;
     MatCreate(PETSC_COMM_WORLD, &C);
     
@@ -121,7 +121,7 @@ PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
     MatDuplicate(M, MAT_COPY_VALUES, &C);
 
     MatDiagonalScale(C, NULL, x);
-    MatMatMult(C, M, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &C);
+    MatMatMult(C, MM, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &C);
     MatGetDiagonal(C, f);
     VecAXPY(f, 1, x);
 
@@ -151,36 +151,6 @@ PetscScalar SimrankEstimator::SparseVecDot(
     }
     return s;
 }
-
-
-/*
-PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec xx, Vec y) {
-    void* to_mffd;
-    MatShellGetContext(MFFD, &to_mffd);
-    Mat     **m = (Mat**)to_mffd;
-    Mat      W = *m[0], WT = *m[1], BUF = *m[2];
-    Mat C;
-    PetscInt N;
-    PetscInt num_iter = *(int*)m[3];
-
-    // MatDuplicate(W, MAT_COPY_VALUES, &C);
-    // MatZeroEntries(C);
-    // MatDiagonalSet(C, xx, INSERT_VALUES);
-    
-    MatGetSize(BUF, &N, &N);
-    MatCopy(WT, BUF, SAME_NONZERO_PATTERN);
-    MatDiagonalScale(BUF, NULL, xx);
-
-    // MatPtAP(C, W, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &C);
-    // MatView(C, PETSC_VIEWER_STDOUT_WORLD);
-    MatMatMult(BUF, W, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &C);
-    MatGetDiagonal(C, y);
-    // VecView(y, PETSC_VIEWER_STDOUT_WORLD);
-    MatDestroy(&C);
-    return 0;
-}
-*/
-
 
 
 PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
@@ -217,19 +187,17 @@ PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
                 ids_wt,  vals_wt,  ncols_wt
             );
             MatRestoreRow(BUF, i, &ncols_buf, &ids_buf, &vals_buf);
-            MatRestoreRow(W,  i, &ncols_wt,  &ids_wt,  &vals_wt);
+            MatRestoreRow(WT,  i, &ncols_wt,  &ids_wt,  &vals_wt);
+            
         }
         VecSetValues(f, i2 - i1, ids_f, vals_f, ADD_VALUES);
     }
-
     VecAssemblyBegin(f);
     VecAssemblyEnd(f);
-
     delete[] ids_f;
     delete[] vals_f;
     return 0;
 }
-
 
 
 void SimrankEstimator::solveD(PetscScalar tol) {
@@ -239,10 +207,12 @@ void SimrankEstimator::solveD(PetscScalar tol) {
     KSP solver;
 
     // PetscOptionsInsertString(NULL, "-ksp_view -ksp_converged_reason -ksp_monitor -pc_type -ksp_view_mat_explicit");
-    PetscOptionsInsertString(NULL, "-ksp_monitor -pc_type -ksp_guess_type");
-
+    PetscOptionsInsertString(NULL, "-ksp_monitor -pc_type -ksp_gmres_modifiedgramschmidt -ksp_gmres_cgs_refinement_type -ksp_gmres_restart");
+    PetscOptionsInsertString(NULL, "-ksp_converged_reason -ksp_gmres_preallocate");
     PetscOptionsSetValue(NULL, "-pc_type", "none");
-    PetscOptionsSetValue(NULL, "-ksp_guess_type", "pod");
+    //PetscOptionsSetValue(NULL, "-ksp_guess_type", "pod");
+    PetscOptionsSetValue(NULL, "-ksp_gmres_cgs_refinement_type", "refine_ifneeded");
+    PetscOptionsSetValue(NULL, "-ksp_gmres_restart", "20");
 
     VecCreate  (PETSC_COMM_WORLD, &tmp);
     VecCreate  (PETSC_COMM_WORLD, &b);
@@ -252,17 +222,17 @@ void SimrankEstimator::solveD(PetscScalar tol) {
     VecSetType (tmp, VECMPI);
     VecSetType (b,   VECMPI);
     VecSet     (b,   1.0);
-    // VecSet     (x,   0.0);
+    VecSet     (x,   1.0);
     
     MatCreateShell       (PETSC_COMM_WORLD, PETSC_DECIDE, PETSC_DECIDE, N, N, to_mffd, &MFFD);
     MatShellSetOperation (MFFD, MATOP_MULT, (void(*)(void))MFFD_Matvec);
 
     KSPCreate        (PETSC_COMM_WORLD, &solver);
     KSPSetOperators  (solver, MFFD, MFFD);
-    KSPSetType       (solver, KSPGMRES);
+    KSPSetType       (solver, KSPLGMRES);
     KSPSetTolerances(solver, 0, 0.00001, PETSC_DEFAULT, PETSC_DEFAULT);
-    KSPSetInitialGuessNonzero(solver, PETSC_TRUE);
     KSPSetFromOptions(solver);
+    KSPSetInitialGuessNonzero(solver, PETSC_TRUE);
 
     KSPSolve(solver, b, x);
     

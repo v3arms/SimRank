@@ -1,71 +1,25 @@
 #define CATCH_CONFIG_RUNNER
 
-
 #include "catch.hpp"
 #include "../src/core.hpp"
 
 
 TEST_CASE("MatLoad") {
-    INFO("Creating estimator object..");
     auto sr = new SimrankEstimator();
-    INFO("Done.");
-
-    INFO("Loading sample mtx..");
     sr->matLoadPetsc("../data/amazon0505.petsc");
-    INFO("Done.");
-    INFO("What is loaded :");
-    // MatView(sr->getW(), PETSC_VIEWER_STDOUT_WORLD);
-
+    MatView(sr->getW(), PETSC_VIEWER_STDOUT_WORLD);
     delete sr;
 }
 
 
-TEST_CASE("solveD") {
+TEST_CASE("solvesmp") {
     auto sr = new SimrankEstimator();
     sr->matLoadPetsc("../data/smp.petsc");
-    // sr->matLoadPetsc("../data/smp.petsc");
     MatView(sr->getW(), PETSC_VIEWER_STDOUT_WORLD);
     sr->solveD();
     VecView(sr->getD(), PETSC_VIEWER_STDOUT_WORLD);
 }
 
-
-TEST_CASE("solve") {
-    auto sr = new SimrankEstimator();
-    // sr->matLoadPetsc("../data/amazon0505.petsc");
-    sr->matLoadPetsc("../data/smp.petsc");
-
-    Vec b, x;
-    KSP solver;
-    PetscInt N;
-
-    MatGetSize(sr->getW(), &N, &N);
-    VecCreate  (PETSC_COMM_WORLD, &x);
-    VecCreate  (PETSC_COMM_WORLD, &b);
-    VecSetSizes(x, PETSC_DECIDE,   N);
-    VecSetSizes(b, PETSC_DECIDE, N);
-    VecSetSizes(x, PETSC_DECIDE, N);
-    VecSetType (x, VECMPI);
-    VecSetType (b, VECMPI);
-    VecSet     (b, 1);
-    
-    // MatView(sr->getW(), PETSC_VIEWER_STDOUT_WORLD);
-
-    KSPCreate        (PETSC_COMM_WORLD, &solver);
-    KSPSetOperators  (solver, sr->getW(), sr->getW());
-    KSPSetType       (solver, KSPLGMRES);
-    KSPSetInitialGuessNonzero(solver, PETSC_TRUE);
-    KSPSetFromOptions(solver);
-    KSPSetUp         (solver);
-
-    KSPSolve(solver, b, x);
-
-    // VecView(b, PETSC_VIEWER_STDOUT_WORLD);
-    
-    KSPDestroy(&solver);
-    VecDestroy(&x);
-    VecDestroy(&b);
-}
 
 
 TEST_CASE("sparsevecdot") {
@@ -111,12 +65,21 @@ TEST_CASE("diagscale") {
 }
 
 
-TEST_CASE("solvelarger") {
+TEST_CASE("solvewiki") {
+    auto sr = new SimrankEstimator();
+    sr->matLoadPetsc("../data/wiki.petsc");
+    sr->solveD();
+
+
+}
+
+
+TEST_CASE("solveam") {
     auto sr = new SimrankEstimator();
     sr->matLoadPetsc("../data/amazon0505.petsc");
     sr->solveD();
-    VecView(sr->getD(), PETSC_VIEWER_STDOUT_WORLD);
 }
+
 
 
 int main(int argc, char* argv[] ) {

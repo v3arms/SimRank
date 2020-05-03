@@ -12,6 +12,8 @@ print(W)
 
 W = scsp.csr_matrix(W)
 
+print(W)
+
 
 def matvec3(x) :
     XS = scsp.csr_matrix(scsp.diags(x, 0))
