@@ -81,6 +81,39 @@ TEST_CASE("solveam") {
 }
 
 
+TEST_CASE("mpi_seq_matmult") {
+    auto *sr = new SimrankEstimator();
+    sr->matLoadPetsc("../data/smp.petsc");
+
+    Vec y, x;
+    VecCreateSeq(MPI_COMM_SELF, 4, &x);
+    VecCreateSeq(MPI_COMM_SELF, 4, &y);
+    VecSet(x, 1);
+
+    MatMult(sr->getW(), x, y);
+    VecView(y, PETSC_VIEWER_STDOUT_WORLD);
+}
+
+
+TEST_CASE("mpi_allgather") {
+    PetscScalar *b = new PetscScalar[10];
+    PetscInt r, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &r);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    for (int i = 0; i < 10; i++)
+        b[i] = 10*r + i;
+    
+    PetscScalar *recv = new PetscScalar[size * 10];
+
+    MPI_Allgather(b, 10, MPI_DOUBLE, recv, 10, MPI_DOUBLE, MPI_COMM_WORLD);
+
+    for (int i = 0; i < size * 10; i++)
+        PetscPrintf(PETSC_COMM_WORLD, "%lf ", recv[i]);
+    PetscPrintf(PETSC_COMM_WORLD, "\n");
+}
+
+
 
 int main(int argc, char* argv[] ) {
     // PetscOptionsSetValue(NULL, "-ksp_view", NULL);
