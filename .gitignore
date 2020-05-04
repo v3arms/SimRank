@@ -1,0 +1,7 @@
+.vscode/
+test/.vscode
+src/.vscode
+utils/.vscode
+utils/__pycache__
+data/
+test/test1

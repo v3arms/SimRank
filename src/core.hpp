@@ -8,24 +8,17 @@ class SimrankEstimator {
         ~SimrankEstimator();
 
         void matLoadPetsc(const char fname[]);
-        void solveD(PetscScalar tol = 0.00001);
+        void solve(PetscScalar tol = 0.00001);
         void exportD() = delete;
-        const Mat getW();
+        const Mat getWT();
         const Vec getD();
 
-        static PetscScalar SparseVecDot(
-            const PetscInt    *ids1, 
-            const PetscScalar *vals1, 
-            const PetscInt     ncols1,
-            const PetscInt    *ids2, 
-            const PetscScalar *vals2,
-            const PetscInt     ncols2
-        );
-
     private : 
-        static PetscErrorCode MFFD_Matvec(Mat, Vec xx, Vec y);
+        static PetscErrorCode MF_Matvec(Mat, Vec x, Vec y);
+        void* MF_Matvec_Preallocate();
+        void  MF_Matvec_Free(void* ctx);
         
-        Mat         W, WT, BUF, MFFD;
+        Mat         WT;
         Vec         x;
         PetscScalar tol, c;
         PetscInt    num_iter, N, argc, max_sp_rate;
@@ -34,31 +27,20 @@ class SimrankEstimator {
 };
 
 
-// #include "core.hpp"
-
-
 SimrankEstimator::SimrankEstimator()
 : tol(0.00001)
 , c(0.4)
 , num_iter(10)
 , max_sp_rate(1000) {
-    MatCreate(PETSC_COMM_WORLD, &W);
     MatCreate(PETSC_COMM_WORLD, &WT);
-    MatCreate(PETSC_COMM_WORLD, &BUF);
-
-    MatSetType(W,   MATMPIAIJ);
     MatSetType(WT,  MATMPIAIJ);
-    MatSetType(BUF, MATMPIAIJ);
-
     VecCreate (PETSC_COMM_WORLD, &x);
     VecSetType(x,   VECMPI);
 }
 
 
 SimrankEstimator::~SimrankEstimator() {
-    MatDestroy(&W);
     MatDestroy(&WT);
-    MatDestroy(&BUF);
     VecDestroy(&x);
 }
 
@@ -74,12 +56,12 @@ void SimrankEstimator::matLoadPetsc(const char fname[]) {
 
     MatTranspose(TMP, MAT_INPLACE_MATRIX, &TMP);
     MatGetSize  (TMP, &N, &N);
-    MatDuplicate(TMP, MAT_COPY_VALUES, &W);
-    MatDuplicate(TMP, MAT_COPY_VALUES, &BUF);
+    MatDuplicate(TMP, MAT_COPY_VALUES, &WT);
 
     int i1, i2, ncols;
     const PetscScalar *vals;
     const PetscInt *ids;
+    MatInfo info;
 
     MatGetOwnershipRange(TMP, &i1, &i2);
     for (int i = i1, sum = 0; i < i2; i++, sum = 0) {
@@ -89,51 +71,31 @@ void SimrankEstimator::matLoadPetsc(const char fname[]) {
             sum += vals[j];
         for (int j = 0; j < ncols; j++)
             new_vals[j] = sqrtc * vals[j] / sum;
-        MatSetValues (W, 1, &i, ncols, ids, new_vals, INSERT_VALUES);
+        MatSetValues (WT, 1, &i, ncols, ids, new_vals, INSERT_VALUES);
         MatRestoreRow(TMP, i, &ncols, &ids, &vals);
     }
-    
-    
-    MatAssemblyBegin(W, MAT_FINAL_ASSEMBLY);
-    MatAssemblyEnd  (W, MAT_FINAL_ASSEMBLY);
-    MatTranspose    (W, MAT_INPLACE_MATRIX, &W);
-    // MatCreateTranspose(W, &WT);
-    MatTranspose    (W, MAT_INITIAL_MATRIX, &WT);
-    MatDestroy      (&TMP);
+    MatAssemblyBegin(WT, MAT_FINAL_ASSEMBLY);
+    MatAssemblyEnd  (WT, MAT_FINAL_ASSEMBLY);
+    MatGetInfo(WT, MAT_GLOBAL_SUM, &info);
+
+    PetscPrintf(PETSC_COMM_WORLD, "Total matrix memory : %lf MB\n", info.memory / (1024*1024));
+
+    MatDestroy(&TMP);
 }
 
 
-const Mat SimrankEstimator::getW() {
-    return W;
+const Mat SimrankEstimator::getWT() {
+    return WT;
 }
 
 
-/*
-PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
-    void* to_mffd;
-    MatShellGetContext(MFFD, &to_mffd);
-    Mat     **m = (Mat**)to_mffd;
-    Mat M = *m[1];
-    Mat MM = *m[0];
-    Mat C;
-    MatCreate(PETSC_COMM_WORLD, &C);
-    
-
-    MatDuplicate(M, MAT_COPY_VALUES, &C);
-
-    MatDiagonalScale(C, NULL, x);
-    MatMatMult(C, MM, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &C);
-    MatGetDiagonal(C, f);
-    VecAXPY(f, 1, x);
-
-    // auto ierr = MatMult(M, x, f);
-    return 0;
+const Vec SimrankEstimator::getD() {
+    return x;
 }
-*/
 
 
 
-PetscScalar SimrankEstimator::SparseVecDot(
+PetscScalar SparseVecDot(
     const PetscInt    *ids1, 
     const PetscScalar *vals1, 
     const PetscInt     ncols1,
@@ -153,119 +115,102 @@ PetscScalar SimrankEstimator::SparseVecDot(
 }
 
 
-PetscScalar SparseDenseVecDot() {
+void* SimrankEstimator::MF_Matvec_Preallocate() {
+    PetscInt N, i1, i2, nproc;
+    MatGetSize(WT, &N, &N);
+    MatGetOwnershipRange(WT, &i1, &i2);
+    MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
+    auto *f_all  = new PetscScalar[N],
+         *vals_f = new PetscScalar[i2 - i1];
+    auto *ids_f  = new PetscInt[i2 - i1],
+         *recvc  = new PetscInt[nproc]; 
+    const PetscInt *recvr;
+    MatGetOwnershipRanges(WT, &recvr);
+    for (int i = 1; i <= nproc; i++)
+        recvc[i - 1] = recvr[i] - recvr[i - 1];
+    for (int i = 0; i < i2 - i1; i++)
+        ids_f[i] = i1 + i;
+    
+    Mat** mf_ctx = new Mat*[10];
+    mf_ctx[0] = &WT;
+    mf_ctx[1] = (Mat*)&num_iter;
+    mf_ctx[2] = (Mat*)f_all;
+    mf_ctx[3] = (Mat*)vals_f;
+    mf_ctx[4] = (Mat*)ids_f;
+    mf_ctx[5] = (Mat*)recvc;
+    mf_ctx[6] = (Mat*)recvr;
+    return mf_ctx;
 }
 
 
-PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
-    void* to_mffd;
-    MatShellGetContext(MFFD, &to_mffd);
-    Mat     **m = (Mat**)to_mffd;
-    Mat      W = *m[0], WT = *m[1], BUF = *m[2];
-    PetscInt N;
-    PetscInt num_iter = *(int*)m[3];
+void SimrankEstimator::MF_Matvec_Free(void* ctx) {
+    Mat** ct = (Mat**)ctx;
+    delete[] ct[2];
+    delete[] ct[3];
+    delete[] ct[4];
+    delete[] ct[5];
+    // delete[] ct[6];
+    delete[] ct;
+}
 
-    PetscInt           i1, i2, vi1, vi2, ncols_buf, ncols_wt;
-    const PetscScalar *vals_buf, *vals_wt;
-    const PetscInt    *ids_buf,  *ids_wt;
+
+
+PetscErrorCode SimrankEstimator::MF_Matvec(Mat MF, Vec x, Vec f) {
+    void* to_mffd;
+    MatShellGetContext(MF, &to_mffd);
+    Mat **m = (Mat**)to_mffd;
+
+    Mat         WT       = *m[0];
+    PetscInt    num_iter = *(PetscInt*)m[1];
+    PetscScalar *f_all   = (PetscScalar*)m[2],
+                *vals_f  = (PetscScalar*)m[3];
+    PetscInt    *ids_f   = (PetscInt*)m[4],
+                *recvc   = (PetscInt*)m[5],
+                *recvr   = (PetscInt*)m[6];
+
+
+    PetscInt           i1, i2, ncols_wt;
+    const PetscScalar *vals_wt;
+    const PetscInt    *ids_wt;
 
     PetscScalar *cur_f_vals;
     MatGetOwnershipRange(WT, &i1, &i2);
-    VecGetOwnershipRange(f, &vi1, &vi2);
-
-    assert(i1 == vi1 && i2 == vi2 && "Mat and Vec ownership range is incopatible. Shit.\n");
-
-    PetscScalar *vals_f = new PetscScalar[i2 - i1];
-    PetscInt    *ids_f  = new PetscInt   [i2 - i1];
-
-    PetscScalar *buf    = new PetscScalar[1000];
-
-    for (int i = 0; i < i2 - i1; i++)
-        ids_f[i] = i1 + i;
-
+    
     VecCopy(x, f);
     for (int iter = 0; iter < num_iter; iter++) {
         VecGetArray(f, &cur_f_vals);
-
+        MPI_Allgatherv(cur_f_vals, i2 - i1, MPI_DOUBLE, f_all, recvc, recvr, MPI_DOUBLE, MPI_COMM_WORLD);
+        
         for (int i = i1; i < i2; i++) {
             MatGetRow(WT,  i, &ncols_wt,  &ids_wt,  &vals_wt);
-            
+            vals_f[i - i1] = 0;
             for (int j = 0; j < ncols_wt; j++) {
-                
+                vals_f[i - i1] += vals_wt[j] * vals_wt[j] * f_all[ids_wt[j]];                
             }
-
-
             MatRestoreRow(WT,  i, &ncols_wt,  &ids_wt,  &vals_wt);
         }
-    }
-
-    delete[] buf;
-}
-
-
-
-/*
-PetscErrorCode SimrankEstimator::MFFD_Matvec(Mat MFFD, Vec x, Vec f) {
-    void* to_mffd;
-    MatShellGetContext(MFFD, &to_mffd);
-    Mat     **m = (Mat**)to_mffd;
-    Mat      W = *m[0], WT = *m[1], BUF = *m[2];
-    PetscInt N;
-    PetscInt num_iter = *(int*)m[3];
-
-    PetscInt           i1, i2, ncols_buf, ncols_wt;
-    const PetscScalar *vals_buf, *vals_wt;
-    const PetscInt    *ids_buf,  *ids_wt;
-
-    MatGetSize(BUF, &N, &N);
-    
-    MatGetOwnershipRange(BUF, &i1, &i2);
-    PetscScalar *vals_f = new PetscScalar[i2 - i1];
-    PetscInt    *ids_f  = new PetscInt   [i2 - i1];
-    for (int i = 0; i < i2 - i1; i++)
-        ids_f[i] = i1 + i;
-
-    VecCopy(x, f);
-    for (int iter = 0; iter < num_iter; iter++) {
-        MatCopy(WT, BUF, SAME_NONZERO_PATTERN);
-        MatDiagonalScale(BUF, NULL, f);
-
-        for (int i = i1; i < i2; i++) {
-            MatGetRow(BUF, i, &ncols_buf, &ids_buf, &vals_buf);
-            MatGetRow(WT,  i, &ncols_wt,  &ids_wt,  &vals_wt);
-            vals_f[i] = SparseVecDot(
-                ids_buf, vals_buf, ncols_buf, 
-                ids_wt,  vals_wt,  ncols_wt
-            );
-            MatRestoreRow(BUF, i, &ncols_buf, &ids_buf, &vals_buf);
-            MatRestoreRow(WT,  i, &ncols_wt,  &ids_wt,  &vals_wt);
-            
-        }
+        VecRestoreArray(f, &cur_f_vals);
         VecSetValues(f, i2 - i1, ids_f, vals_f, ADD_VALUES);
     }
     VecAssemblyBegin(f);
     VecAssemblyEnd(f);
-    delete[] ids_f;
-    delete[] vals_f;
+
     return 0;
 }
-*/
 
 
-void SimrankEstimator::solveD(PetscScalar tol) {
-    Mat MFFD;
+void SimrankEstimator::solve(PetscScalar tol) {
+    Mat MF;
     Vec tmp, b;
-    Mat* to_mffd[] = {&W, &WT, &BUF, (Mat*)&num_iter};
     KSP solver;
 
-    // PetscOptionsInsertString(NULL, "-ksp_view -ksp_converged_reason -ksp_monitor -pc_type -ksp_view_mat_explicit");
-    PetscOptionsInsertString(NULL, "-ksp_monitor -pc_type -ksp_gmres_modifiedgramschmidt -ksp_gmres_cgs_refinement_type -ksp_gmres_restart");
-    PetscOptionsInsertString(NULL, "-ksp_converged_reason -ksp_gmres_preallocate");
+    PetscOptionsInsertString(NULL, "-ksp_monitor -pc_type -ksp_gmres_restart");
+    PetscOptionsInsertString(NULL, "-ksp_converged_reason");
     PetscOptionsSetValue(NULL, "-pc_type", "none");
-    //PetscOptionsSetValue(NULL, "-ksp_guess_type", "pod");
+    PetscOptionsSetValue(NULL, "-ksp_guess_type", "pod");
     PetscOptionsSetValue(NULL, "-ksp_gmres_cgs_refinement_type", "refine_ifneeded");
-    PetscOptionsSetValue(NULL, "-ksp_gmres_restart", "20");
+    PetscOptionsSetValue(NULL, "-ksp_gmres_restart", "25");
 
     VecCreate  (PETSC_COMM_WORLD, &tmp);
     VecCreate  (PETSC_COMM_WORLD, &b);
@@ -277,11 +222,12 @@ void SimrankEstimator::solveD(PetscScalar tol) {
     VecSet     (b,   1.0);
     VecSet     (x,   1.0);
     
-    MatCreateShell       (PETSC_COMM_WORLD, PETSC_DECIDE, PETSC_DECIDE, N, N, to_mffd, &MFFD);
-    MatShellSetOperation (MFFD, MATOP_MULT, (void(*)(void))MFFD_Matvec);
+    void* to_mf = MF_Matvec_Preallocate();
+    MatCreateShell       (PETSC_COMM_WORLD, PETSC_DECIDE, PETSC_DECIDE, N, N, to_mf, &MF);
+    MatShellSetOperation (MF, MATOP_MULT, (void(*)(void))MF_Matvec);
 
     KSPCreate        (PETSC_COMM_WORLD, &solver);
-    KSPSetOperators  (solver, MFFD, MFFD);
+    KSPSetOperators  (solver, MF, MF);
     KSPSetType       (solver, KSPLGMRES);
     KSPSetTolerances(solver, 0, 0.00001, PETSC_DEFAULT, PETSC_DEFAULT);
     KSPSetFromOptions(solver);
@@ -289,13 +235,9 @@ void SimrankEstimator::solveD(PetscScalar tol) {
 
     KSPSolve(solver, b, x);
     
-    MatDestroy(&MFFD);
+    MF_Matvec_Free(to_mf);
+    MatDestroy(&MF);
     VecDestroy(&tmp);
     VecDestroy(&b);
     KSPDestroy(&solver);
-}
-
-
-const Vec SimrankEstimator::getD() {
-    return x;
 }

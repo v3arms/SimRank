@@ -37,9 +37,10 @@ if __name__ == "__main__" :
     _, ext = splitext(fname)
     if ext == ".mat" :
         wMatlabToPetsc(fname, arg)
-    if ext == ".petsc" :
-        wPetscToMatlab(fname, arg)
-    else :
-        print(".mat and .petsc mtx formats supported only.")
+    else:
+        if ext == ".petsc" :
+            wPetscToMatlab(fname, arg)
+        else :
+            print(".mat and .petsc mtx formats supported only.")
 
 
