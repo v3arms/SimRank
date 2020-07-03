@@ -1,5 +1,6 @@
 #include <petscksp.h>
 #include <petscviewer.h>
+#include <fstream>
 
 
 class SimrankEstimator {
@@ -9,9 +10,10 @@ class SimrankEstimator {
 
         void matLoadPetsc(const char fname[]);
         void solve(PetscScalar tol = 0.00001);
-        void exportD() = delete;
+        void exportD(const char* fname);
         const Mat getWT();
         const Vec getD();
+        Vec SingleSource(int nodeid);
 
     private : 
         static PetscErrorCode MF_Matvec(Mat, Vec x, Vec y);
@@ -30,7 +32,7 @@ class SimrankEstimator {
 SimrankEstimator::SimrankEstimator()
 : tol(0.00001)
 , c(0.4)
-, num_iter(10)
+, num_iter(20)
 , max_sp_rate(1000) {
     MatCreate(PETSC_COMM_WORLD, &WT);
     MatSetType(WT,  MATMPIAIJ);
@@ -79,6 +81,9 @@ void SimrankEstimator::matLoadPetsc(const char fname[]) {
     MatGetInfo(WT, MAT_GLOBAL_SUM, &info);
 
     PetscPrintf(PETSC_COMM_WORLD, "Total matrix memory : %lf MB\n", info.memory / (1024*1024));
+    int n;
+    MatGetSize(WT, &n, &n);
+    PetscPrintf(PETSC_COMM_WORLD, "Size : %d\n", n);
 
     MatDestroy(&TMP);
 }
@@ -236,8 +241,21 @@ void SimrankEstimator::solve(PetscScalar tol) {
     KSPSolve(solver, b, x);
     
     MF_Matvec_Free(to_mf);
+    
     MatDestroy(&MF);
     VecDestroy(&tmp);
     VecDestroy(&b);
     KSPDestroy(&solver);
+}
+
+
+void SimrankEstimator::exportD(const char* fname) {
+    PetscPrintf(PETSC_COMM_WORLD, "exporting d..\n");
+    PetscViewer vw;
+    PetscViewerBinaryOpen(PETSC_COMM_WORLD, fname, FILE_MODE_WRITE, &vw);
+
+    VecView(getD(), vw);
+
+    PetscViewerDestroy(&vw);
+    PetscPrintf(PETSC_COMM_WORLD, "done.\n");
 }

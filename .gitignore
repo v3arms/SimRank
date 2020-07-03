@@ -5,3 +5,4 @@ utils/.vscode
 utils/__pycache__
 data/
 test/test1
+singlesource
