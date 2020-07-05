@@ -5,12 +5,14 @@ from os.path import splitext
 import scipy.io
 import sys
 
-# "export PYTHONPATH=${PETSC_DIR}/lib/petsc/bin:PYTHONPATH"
-# should export to PYTHONPATH as line above in your current shell
-from PetscBinaryIO import PetscBinaryIO
+try :
+    from PetscBinaryIO import PetscBinaryIO
+except ModuleNotFoundError :
+    print("You should do this in your shell:\nexport PYTHONPATH=${PETSC_DIR}/lib/petsc/bin:PYTHONPATH")
+    sys.exit(0)
 
 
-def wMatlabToPetsc(fname : str, arg : str) : 
+def matMatlabToPetsc(fname : str, arg : str) : 
     M = scipy.io.loadmat(fname)[arg].tocsr()
 
     petsc_mat = PETSc.Mat().createAIJ(
@@ -21,9 +23,9 @@ def wMatlabToPetsc(fname : str, arg : str) :
     vw(petsc_mat)
 
 
-def wPetscToMatlab(fname : str, arg : str) : 
+def matPetscToMatlab(fname : str, arg : str) : 
     M = PetscBinaryIO().readBinaryFile(fname, mattype="scipy.sparse")[0]
-    scipy.io.savemat(splitext(fname)[0] + ".mat", {"W" : M})
+    scipy.io.savemat(splitext(fname)[0] + ".mat", {arg : M})
 
 
 if __name__ == "__main__" :
@@ -36,11 +38,10 @@ if __name__ == "__main__" :
 
     _, ext = splitext(fname)
     if ext == ".mat" :
-        wMatlabToPetsc(fname, arg)
-    else:
-        if ext == ".petsc" :
-            wPetscToMatlab(fname, arg)
-        else :
-            print(".mat and .petsc mtx formats supported only.")
+        matMatlabToPetsc(fname, arg)
+    elif ext == ".petsc" :
+        matPetscToMatlab(fname, arg)
+    else :
+        print(".mat and .petsc mtx formats supported only.")
 
 
